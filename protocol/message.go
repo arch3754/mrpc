@@ -62,8 +62,7 @@ func (h *Header) SetCompress(compress Compress) {
 type Serialize byte
 
 const (
-	Raw Serialize = iota
-	Json
+	Json Serialize = iota
 	MsgPack
 )
 

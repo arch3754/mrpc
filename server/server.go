@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"github.com/arch3754/mrpc/codec"
 	"github.com/arch3754/mrpc/log"
 	"github.com/arch3754/mrpc/protocol"
 	"io"
@@ -97,7 +98,23 @@ func (s *Server) readRequest(ctx context.Context, rd io.Reader) (*protocol.Messa
 func (s *Server) handleRequest(ctx context.Context, req *protocol.Message) (*protocol.Message, error) {
 	resp := req.Clone()
 	resp.SetMessageType(protocol.Response)
+	cdc := codec.CodecMap[req.Serialize()]
+
 	handle := s.handlerMap[req.Path]
-	err := handle.call(ctx, req.Method, reflect.ValueOf(req), reflect.ValueOf(resp))
+	md := handle.methodMap[req.Method]
+	var arg = reflect.New(md.requestTy)
+	err := cdc.Decode(req.Payload, arg.Interface())
+	if err != nil {
+		//todo 返回给client错误
+		return nil, err
+	}
+	reply := reflect.New(md.responseTy)
+	err = handle.call(ctx, req.Method, arg, reply)
+	data, err := cdc.Encode(reply.Interface())
+	if err != nil {
+		//todo 返回给client错误
+		return nil, err
+	}
+	resp.Payload = data
 	return resp, err
 }
