@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"fmt"
 	"github.com/arch3754/mrpc/codec"
 	"github.com/arch3754/mrpc/log"
 	"github.com/arch3754/mrpc/protocol"
+	"github.com/arch3754/mrpc/share"
 	"io"
 	"net"
 	"reflect"
@@ -22,8 +24,8 @@ type Server struct {
 	//seq        uint64
 }
 
-func NewServer(addr string) *Server {
-	return &Server{}
+func NewServer() *Server {
+	return &Server{handlerMap: make(map[string]*handler), activeConnMap: make(map[string]net.Conn)}
 }
 func (s *Server) Serve(network, address string) error {
 	var ln net.Listener
@@ -33,7 +35,6 @@ func (s *Server) Serve(network, address string) error {
 	} else {
 		ln, err = tls.Listen(network, address, s.tlsConfig)
 	}
-	//	ln, err := makeListen(s, network, address)
 	if err != nil {
 		return err
 	}
@@ -55,7 +56,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	r := bufio.NewReaderSize(conn, 1024)
 	for {
 		now := time.Now()
-		ctx := context.WithValue(context.Background(), "req_ctx", conn)
+		ctx := share.WithValue(context.Background(), "conn", conn)
 		req, err := s.readRequest(ctx, r)
 		if err != nil {
 			if err == io.EOF {
@@ -67,7 +68,7 @@ func (s *Server) serveConn(conn net.Conn) {
 			return
 		}
 		conn.SetReadDeadline(now.Add(30 * time.Second))
-
+		ctx = share.WithLocalValue(ctx, "req_time", time.Now().UnixNano())
 		go func() {
 			if req.IsHbs() {
 				req.SetMessageType(protocol.Response)
@@ -75,10 +76,12 @@ func (s *Server) serveConn(conn net.Conn) {
 				conn.Write(*data)
 				return
 			}
-			ctx = context.WithValue(ctx, "req_metadata", req.Metadata)
+			respMata := make(map[string]string)
+			ctx = share.WithLocalValue(share.WithLocalValue(ctx, "req_metadata", req.Metadata),
+				"resp_metadata", respMata)
 			resp, err := s.handleRequest(ctx, req)
 			if err != nil {
-				log.Rlog.Error("handler err:%v", err)
+				return
 			}
 			conn.SetWriteDeadline(now.Add(30 * time.Second))
 
@@ -102,15 +105,18 @@ func (s *Server) handleRequest(ctx context.Context, req *protocol.Message) (*pro
 
 	handle := s.handlerMap[req.Path]
 	md := handle.methodMap[req.Method]
-	var arg = reflect.New(md.requestTy)
-	err := cdc.Decode(req.Payload, arg.Interface())
+	var arg = argsReplyPools.Get(md.argTy)
+	fmt.Println(string(req.Payload))
+	err := cdc.Decode(req.Payload, arg)
 	if err != nil {
 		//todo 返回给client错误
+		log.Rlog.Error("decode err:%v", err)
 		return nil, err
 	}
-	reply := reflect.New(md.responseTy)
-	err = handle.call(ctx, req.Method, arg, reply)
-	data, err := cdc.Encode(reply.Interface())
+	reply := argsReplyPools.Get(md.replyTy)
+	fmt.Println(ctx, reflect.ValueOf(arg).Elem().Interface(), reflect.ValueOf(reply).Elem().Interface())
+	err = handle.call(ctx, req.Method, reflect.ValueOf(arg), reflect.ValueOf(reply))
+	data, err := cdc.Encode(reply)
 	if err != nil {
 		//todo 返回给client错误
 		return nil, err
