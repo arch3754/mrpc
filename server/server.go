@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"reflect"
+	"sync"
 	"time"
 )
 
@@ -19,8 +20,8 @@ type Server struct {
 	plugins       []plugin
 	tlsConfig     *tls.Config
 	handlerMap    map[string]*handler
+	mu            sync.Mutex
 	activeConnMap map[string]net.Conn
-	//seq        uint64
 }
 
 func NewServer() *Server {
@@ -46,9 +47,18 @@ func (s *Server) serveListener(ln net.Listener) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-
+			log.Rlog.Error("accept err:%v", err)
+			return
 		}
+		s.mu.Lock()
+		s.activeConnMap[conn.RemoteAddr().String()] = conn
+		s.mu.Unlock()
+
 		s.serveConn(conn)
+
+		s.mu.Lock()
+		delete(s.activeConnMap, conn.RemoteAddr().String())
+		s.mu.Unlock()
 	}
 }
 func (s *Server) serveConn(conn net.Conn) {
@@ -67,7 +77,7 @@ func (s *Server) serveConn(conn net.Conn) {
 			return
 		}
 		conn.SetReadDeadline(now.Add(30 * time.Second))
-		ctx = context.WithValue(ctx, "req_time", time.Now().UnixNano())
+		ctx = util.SetRequestTime(context.Background(), time.Now().Unix())
 		go func() {
 			if req.IsHbs() {
 				req.SetMessageType(protocol.Response)

@@ -13,6 +13,7 @@ const (
 	ResponseMetaData = "response_metadata"
 )
 const (
+	RequestTime   = "request_time"
 	ResponseError = "response_error"
 )
 
@@ -35,6 +36,16 @@ func GetResponseMetaData(ctx context.Context) map[string]string {
 }
 func SetResponseMetaData(ctx context.Context, meta map[string]string) context.Context {
 	return context.WithValue(ctx, ResponseMetaData, meta)
+}
+func GetRequestTime(ctx context.Context) int64 {
+	value := ctx.Value(RequestTime)
+	if value != nil {
+		return value.(int64)
+	}
+	return 0
+}
+func SetRequestTime(ctx context.Context, t int64) context.Context {
+	return context.WithValue(ctx, RequestTime, t)
 }
 
 var (
