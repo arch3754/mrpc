@@ -5,6 +5,21 @@ import (
 	"sync"
 )
 
+var argsReplyPools = &typePools{
+	pools: make(map[reflect.Type]*sync.Pool),
+	New: func(t reflect.Type) interface{} {
+		var argv reflect.Value
+
+		if t.Kind() == reflect.Ptr { // reply must be ptr
+			argv = reflect.New(t.Elem())
+		} else {
+			argv = reflect.New(t)
+		}
+
+		return argv.Interface()
+	},
+}
+
 type typePools struct {
 	mu    sync.RWMutex
 	pools map[reflect.Type]*sync.Pool

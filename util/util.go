@@ -2,10 +2,40 @@ package util
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io/ioutil"
 	"runtime"
 )
+
+const (
+	RequestMetaData  = "request_metadata"
+	ResponseMetaData = "response_metadata"
+)
+const (
+	ResponseError = "response_error"
+)
+
+func GetRequestMetaData(ctx context.Context) map[string]string {
+	value := ctx.Value(RequestMetaData)
+	if value != nil {
+		return value.(map[string]string)
+	}
+	return nil
+}
+func SetRequestMetaData(ctx context.Context, meta map[string]string) context.Context {
+	return context.WithValue(ctx, RequestMetaData, meta)
+}
+func GetResponseMetaData(ctx context.Context) map[string]string {
+	value := ctx.Value(ResponseMetaData)
+	if value != nil {
+		return value.(map[string]string)
+	}
+	return nil
+}
+func SetResponseMetaData(ctx context.Context, meta map[string]string) context.Context {
+	return context.WithValue(ctx, ResponseMetaData, meta)
+}
 
 var (
 	dunno     = []byte("???")

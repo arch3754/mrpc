@@ -26,7 +26,7 @@ func TestClient(t *testing.T) {
 		return
 	}
 	var reply int
-	err = c.syncCall(context.Background(), "A", "Add", 1, &reply, nil)
+	err = c.syncCall(context.Background(), "A", "Add", 1, &reply)
 	if err != nil {
 		t.Error(err)
 		return

@@ -4,11 +4,10 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
-	"fmt"
 	"github.com/arch3754/mrpc/codec"
 	"github.com/arch3754/mrpc/log"
 	"github.com/arch3754/mrpc/protocol"
-	"github.com/arch3754/mrpc/share"
+	"github.com/arch3754/mrpc/util"
 	"io"
 	"net"
 	"reflect"
@@ -56,7 +55,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	r := bufio.NewReaderSize(conn, 1024)
 	for {
 		now := time.Now()
-		ctx := share.WithValue(context.Background(), "conn", conn)
+		ctx := context.WithValue(context.Background(), "conn", conn)
 		req, err := s.readRequest(ctx, r)
 		if err != nil {
 			if err == io.EOF {
@@ -68,7 +67,7 @@ func (s *Server) serveConn(conn net.Conn) {
 			return
 		}
 		conn.SetReadDeadline(now.Add(30 * time.Second))
-		ctx = share.WithLocalValue(ctx, "req_time", time.Now().UnixNano())
+		ctx = context.WithValue(ctx, "req_time", time.Now().UnixNano())
 		go func() {
 			if req.IsHbs() {
 				req.SetMessageType(protocol.Response)
@@ -77,14 +76,9 @@ func (s *Server) serveConn(conn net.Conn) {
 				return
 			}
 			respMata := make(map[string]string)
-			ctx = share.WithLocalValue(share.WithLocalValue(ctx, "req_metadata", req.Metadata),
-				"resp_metadata", respMata)
-			resp, err := s.handleRequest(ctx, req)
-			if err != nil {
-				return
-			}
+			ctx = util.SetResponseMetaData(util.SetRequestMetaData(ctx, req.Metadata), respMata)
+			resp := s.handleRequest(ctx, req)
 			conn.SetWriteDeadline(now.Add(30 * time.Second))
-
 			data := resp.Encode()
 			conn.Write(*data)
 			protocol.FreeMsg(req)
@@ -96,31 +90,54 @@ func (s *Server) serveConn(conn net.Conn) {
 func (s *Server) readRequest(ctx context.Context, rd io.Reader) (*protocol.Message, error) {
 	req := protocol.GetMsg()
 	err := req.Decode(rd)
-	return req, err
+	if err != nil {
+		return nil, err
+	}
+	util.SetRequestMetaData(ctx, req.Metadata)
+	return req, nil
 }
-func (s *Server) handleRequest(ctx context.Context, req *protocol.Message) (*protocol.Message, error) {
+func (s *Server) handleRequest(ctx context.Context, req *protocol.Message) *protocol.Message {
 	resp := req.Clone()
 	resp.SetMessageType(protocol.Response)
 	cdc := codec.CodecMap[req.Serialize()]
 
 	handle := s.handlerMap[req.Path]
 	md := handle.methodMap[req.Method]
+
 	var arg = argsReplyPools.Get(md.argTy)
-	fmt.Println(string(req.Payload))
 	err := cdc.Decode(req.Payload, arg)
 	if err != nil {
-		//todo 返回给client错误
 		log.Rlog.Error("decode err:%v", err)
-		return nil, err
+		argsReplyPools.Put(md.argTy, arg)
+		handlerError(resp, err)
+		return resp
 	}
+
 	reply := argsReplyPools.Get(md.replyTy)
-	fmt.Println(ctx, reflect.ValueOf(arg).Elem().Interface(), reflect.ValueOf(reply).Elem().Interface())
 	err = handle.call(ctx, req.Method, reflect.ValueOf(arg), reflect.ValueOf(reply))
+	if err != nil {
+		argsReplyPools.Put(md.argTy, arg)
+		argsReplyPools.Put(md.replyTy, reply)
+		handlerError(resp, err)
+		return resp
+	}
 	data, err := cdc.Encode(reply)
 	if err != nil {
-		//todo 返回给client错误
-		return nil, err
+		argsReplyPools.Put(md.argTy, arg)
+		argsReplyPools.Put(md.replyTy, reply)
+		handlerError(resp, err)
+		return resp
 	}
+
+	argsReplyPools.Put(md.argTy, arg)
+	argsReplyPools.Put(md.replyTy, reply)
 	resp.Payload = data
-	return resp, err
+	return resp
+}
+func handlerError(resp *protocol.Message, err error) {
+	resp.SetStatus(protocol.Error)
+	if resp.Metadata == nil {
+		resp.Metadata = make(map[string]string)
+	}
+	resp.Metadata[util.ResponseError] = err.Error()
 }

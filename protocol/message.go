@@ -105,9 +105,8 @@ type Message struct {
 }
 
 func NewMessage() *Message {
-	header := Header([14]byte{})
 	return &Message{
-		Header: &header,
+		Header: &Header{},
 	}
 }
 

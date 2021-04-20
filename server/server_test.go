@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/arch3754/mrpc/codec"
 	"github.com/arch3754/mrpc/protocol"
 	"testing"
@@ -14,12 +15,11 @@ type A struct {
 
 func (s *A) Add(ctx context.Context, arg *int, reply *int) error {
 	*reply = *arg + 1
-
-	return nil
+	return fmt.Errorf("test error")
 }
 func TestNewServer(t *testing.T) {
 	s := NewServer()
-	s.Register(&A{}, "")
+	s.Register(new(A))
 	t.Logf("start rpc server,listen on 127.0.0.1:8888")
 	t.Fatal("111", s.Serve("tcp", "127.0.0.1:8888"))
 }
@@ -42,10 +42,7 @@ func TestHandleRequest(t *testing.T) {
 	req.Payload = data
 	server := NewServer()
 	server.Register(new(A), "")
-	res, err := server.handleRequest(context.Background(), req)
-	if err != nil {
-		t.Fatalf("failed to hand request: %v", err)
-	}
+	res := server.handleRequest(context.Background(), req)
 
 	if res.Payload == nil {
 		t.Fatalf("expect reply but got %s", res.Payload)

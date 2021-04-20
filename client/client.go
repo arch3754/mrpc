@@ -3,9 +3,11 @@ package client
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"github.com/arch3754/mrpc/codec"
 	"github.com/arch3754/mrpc/log"
 	"github.com/arch3754/mrpc/protocol"
+	"github.com/arch3754/mrpc/util"
 	"net"
 	"sync"
 	"time"
@@ -67,11 +69,11 @@ func (c *client) Connect(network string, addr string) error {
 func (c *client) newTCPConn(network, address string) (net.Conn, error) {
 	return net.DialTimeout(network, address, c.Option.ConnectTimeout)
 }
-func (c *client) asyncCall(ctx context.Context, path, method string, arg, reply interface{}, meta map[string]string) (*Caller, error) {
+func (c *client) asyncCall(ctx context.Context, path, method string, arg, reply interface{}) (*Caller, error) {
 	caller := &Caller{
 		Path:            path,
 		Method:          method,
-		RequestMetadata: meta,
+		RequestMetadata: util.GetRequestMetaData(ctx),
 		Arg:             arg,
 		Reply:           reply,
 		Done:            make(chan int, 1),
@@ -82,11 +84,11 @@ func (c *client) asyncCall(ctx context.Context, path, method string, arg, reply 
 	}
 	return caller, err
 }
-func (c *client) syncCall(ctx context.Context, path, method string, arg, reply interface{}, meta map[string]string) error {
+func (c *client) syncCall(ctx context.Context, path, method string, arg, reply interface{}) error {
 	caller := &Caller{
 		Path:            path,
 		Method:          method,
-		RequestMetadata: meta,
+		RequestMetadata: util.GetRequestMetaData(ctx),
 		Arg:             arg,
 		Reply:           reply,
 		Done:            make(chan int, 1),
@@ -126,6 +128,7 @@ func (c *client) call(ctx context.Context, caller *Caller) error {
 		return err
 	}
 	req.Payload = data
+	util.SetRequestMetaData(ctx, req.Metadata)
 	_, err = c.conn.Write(*req.Encode())
 	if err != nil {
 		caller.Error = err
@@ -151,15 +154,19 @@ func (c *client) read() {
 		caller := c.callerMap[resp.Seq()]
 		delete(c.callerMap, resp.Seq())
 		c.mu.Unlock()
-
 		caller.ResponseMetadata = resp.Metadata
-
-		cdc := codec.CodecMap[resp.Serialize()]
-		err = cdc.Decode(resp.Payload, caller.Reply)
-		if err != nil {
-			caller.Error = err
+		if resp.Status() == protocol.Error {
+			caller.Error = fmt.Errorf("%v", resp.Metadata[util.ResponseError])
+			caller.Done <- 1
+		} else {
+			cdc := codec.CodecMap[resp.Serialize()]
+			err = cdc.Decode(resp.Payload, caller.Reply)
+			if err != nil {
+				caller.Error = err
+			}
+			caller.Done <- 1
 		}
-		caller.Done <- 1
+
 	}
 	for _, call := range c.callerMap {
 		call.Error = err

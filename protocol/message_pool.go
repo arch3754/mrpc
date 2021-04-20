@@ -4,9 +4,8 @@ import "sync"
 
 var msgPool = sync.Pool{
 	New: func() interface{} {
-		var h = Header([14]byte{})
 		return &Message{
-			Header: &h,
+			Header: &Header{},
 		}
 	},
 }
