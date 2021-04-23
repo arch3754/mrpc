@@ -35,8 +35,7 @@ type Caller struct {
 	seq              uint64
 }
 type Option struct {
-	Retry int
-	//RpcPath            string
+	Retry              int
 	Serialize          protocol.Serialize
 	ReadTimeout        time.Duration
 	ConnectTimeout     time.Duration
@@ -83,9 +82,13 @@ func (c *client) AsyncCall(ctx context.Context, path, method string, arg, reply 
 		Reply:  reply,
 		Done:   make(chan *Caller, 1),
 	}
+
 	meta := ctx.Value(util.RequestMetaData)
 	if meta != nil {
 		caller.RequestMetadata = meta.(map[string]string)
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		caller.RequestMetadata[util.ServerTimeout] = fmt.Sprintf("%v", time.Until(deadline).Milliseconds())
 	}
 	if _, ok := ctx.(*util.Context); !ok {
 		ctx = util.NewContext(ctx)
@@ -105,6 +108,9 @@ func (c *client) SyncCall(ctx context.Context, path, method string, arg, reply i
 	meta := ctx.Value(util.RequestMetaData)
 	if meta != nil {
 		caller.RequestMetadata = meta.(map[string]string)
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		caller.RequestMetadata[util.ServerTimeout] = fmt.Sprintf("%v", time.Until(deadline).Milliseconds())
 	}
 	if _, ok := ctx.(*util.Context); !ok {
 		ctx = util.NewContext(ctx)
