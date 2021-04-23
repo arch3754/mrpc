@@ -9,17 +9,19 @@ import (
 	"github.com/arch3754/mrpc/protocol"
 	"github.com/arch3754/mrpc/util"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 )
 
 type client struct {
-	Option    *Option
-	conn      net.Conn
-	seq       uint64
-	mu        sync.Mutex
-	callerMap map[uint64]*Caller
-	closing   bool
+	Option        *Option
+	conn          net.Conn
+	seq           uint64
+	mu            sync.Mutex
+	callerMap     map[uint64]*Caller
+	closing       bool
+	serverCpuIdle float64
 }
 type Caller struct {
 	Path             string
@@ -29,22 +31,23 @@ type Caller struct {
 	Arg              interface{}
 	Reply            interface{}
 	Error            error
-	Done             chan int
+	Done             chan *Caller
+	seq              uint64
 }
 type Option struct {
-	Retry              int
-	RpcPath            string
+	Retry int
+	//RpcPath            string
 	Serialize          protocol.Serialize
 	ReadTimeout        time.Duration
 	ConnectTimeout     time.Duration
 	HbsEnable          bool
 	HbsInterval        time.Duration
-	HbsTimeout         int
+	HbsTimeout         time.Duration
 	Compress           protocol.Compress
 	TCPKeepAlivePeriod time.Duration
 }
 
-func newClient(option *Option) *client {
+func NewClient(option *Option) *client {
 	return &client{
 		Option:    option,
 		mu:        sync.Mutex{},
@@ -54,70 +57,132 @@ func newClient(option *Option) *client {
 func (c *client) Connect(network string, addr string) error {
 	conn, err := c.newTCPConn(network, addr)
 	if err != nil {
-		log.Rlog.Error("client connect %v@%v failed:%v", err)
+		log.Rlog.Error("client connect %v@%v failed:%v", network, addr, err)
 		return err
 	}
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		tcpConn.SetKeepAlivePeriod(c.Option.TCPKeepAlivePeriod)
-		tcpConn.SetKeepAlive(true)
+		_ = tcpConn.SetKeepAlivePeriod(c.Option.TCPKeepAlivePeriod)
+		_ = tcpConn.SetKeepAlive(true)
 	}
-	conn.SetDeadline(time.Now().Add(c.Option.ReadTimeout))
+	_ = conn.SetDeadline(time.Now().Add(c.Option.ReadTimeout))
 	c.conn = conn
 	go c.read()
+	if c.Option.HbsEnable {
+		go c.heartbeatTicker()
+	}
 	return nil
 }
 func (c *client) newTCPConn(network, address string) (net.Conn, error) {
 	return net.DialTimeout(network, address, c.Option.ConnectTimeout)
 }
-func (c *client) asyncCall(ctx context.Context, path, method string, arg, reply interface{}) (*Caller, error) {
+func (c *client) AsyncCall(ctx context.Context, path, method string, arg, reply interface{}) *Caller {
 	caller := &Caller{
-		Path:            path,
-		Method:          method,
-		RequestMetadata: util.GetRequestMetaData(ctx),
-		Arg:             arg,
-		Reply:           reply,
-		Done:            make(chan int, 1),
+		Path:   path,
+		Method: method,
+		Arg:    arg,
+		Reply:  reply,
+		Done:   make(chan *Caller, 1),
 	}
-	err := c.call(ctx, caller)
-	if err != nil {
-		return nil, err
+	meta := ctx.Value(util.RequestMetaData)
+	if meta != nil {
+		caller.RequestMetadata = meta.(map[string]string)
 	}
-	return caller, err
+	if _, ok := ctx.(*util.Context); !ok {
+		ctx = util.NewContext(ctx)
+	}
+	c.call(ctx, caller)
+	return caller
 }
-func (c *client) syncCall(ctx context.Context, path, method string, arg, reply interface{}) error {
+
+func (c *client) SyncCall(ctx context.Context, path, method string, arg, reply interface{}) error {
 	caller := &Caller{
-		Path:            path,
-		Method:          method,
-		RequestMetadata: util.GetRequestMetaData(ctx),
-		Arg:             arg,
-		Reply:           reply,
-		Done:            make(chan int, 1),
+		Path:   path,
+		Method: method,
+		Arg:    arg,
+		Reply:  reply,
+		Done:   make(chan *Caller, 1),
 	}
-	err := c.call(ctx, caller)
-	if err != nil {
-		return err
+	meta := ctx.Value(util.RequestMetaData)
+	if meta != nil {
+		caller.RequestMetadata = meta.(map[string]string)
 	}
-	<-caller.Done
-	if caller.Error != nil {
-		return caller.Error
+	if _, ok := ctx.(*util.Context); !ok {
+		ctx = util.NewContext(ctx)
+	}
+	c.call(ctx, caller)
+	var err error
+	select {
+	case <-ctx.Done():
+		c.mu.Lock()
+		delete(c.callerMap, caller.seq)
+		c.mu.Unlock()
+		caller.Error = ctx.Err()
+		caller.Done <- caller
+
+	case call := <-caller.Done:
+		err = call.Error
+	}
+	return err
+}
+func (c *client) heartbeatTicker() {
+	if c.Option.HbsTimeout == 0 {
+		c.Option.HbsTimeout = 30 * time.Second
+	}
+	if c.Option.HbsInterval == 0 {
+		c.Option.HbsInterval = 5 * time.Second
+	}
+	ticker := time.NewTicker(c.Option.HbsInterval)
+	for range ticker.C {
+		if c.closing {
+			ticker.Stop()
+			break
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), c.Option.HbsTimeout)
+		var reply int64
+		err := c.heartbeat(ctx, &reply)
+		if err != nil {
+			log.Rlog.Warn("heartbeat %v err:%v", c.conn.RemoteAddr().String(), err)
+		}
+		cancel()
+	}
+}
+func (c *client) heartbeat(ctx context.Context, reply interface{}) error {
+
+	caller := c.AsyncCall(ctx, "", "", time.Now().UnixNano(), reply)
+	select {
+	case <-ctx.Done():
+		c.mu.Lock()
+		delete(c.callerMap, caller.seq)
+		c.mu.Unlock()
+		caller.Error = ctx.Err()
+		caller.Done <- caller
+		return ctx.Err()
+	case call := <-caller.Done:
+		if call.Error != nil {
+			return call.Error
+		}
+		if v, ok := call.ResponseMetadata["cpu.idle"]; ok {
+			c.serverCpuIdle, _ = strconv.ParseFloat(v, 64)
+			log.Rlog.Debug("heartbeat remoteAddr=%v cpu.idle=%v", c.conn.RemoteAddr().String(), c.serverCpuIdle)
+		}
 	}
 	return nil
 }
-func (c *client) call(ctx context.Context, caller *Caller) error {
+func (c *client) call(ctx context.Context, caller *Caller) {
 
+	_ = c.conn.SetDeadline(time.Now().Add(c.Option.ReadTimeout))
 	c.mu.Lock()
 	cdc := codec.CodecMap[c.Option.Serialize]
 	seq := c.seq
 	c.seq++
+
 	c.callerMap[seq] = caller
 	c.mu.Unlock()
-
+	caller.seq = seq
 	req := protocol.GetMsg()
 	req.SetMessageType(protocol.Request)
 	req.SetSeq(seq)
-	if len(caller.Path) == 0 || len(caller.Method) == 0 {
-		req.SetHbs(true)
-	}
+	req.SetHbs(len(caller.Path) == 0 || len(caller.Method) == 0)
 	req.Path = caller.Path
 	req.Method = caller.Method
 	req.SetSerialize(c.Option.Serialize)
@@ -125,26 +190,30 @@ func (c *client) call(ctx context.Context, caller *Caller) error {
 	req.SetCompress(c.Option.Compress)
 	data, err := cdc.Encode(caller.Arg)
 	if err != nil {
-		return err
-	}
-	req.Payload = data
-	util.SetRequestMetaData(ctx, req.Metadata)
-	_, err = c.conn.Write(*req.Encode())
-	if err != nil {
-		caller.Error = err
 		c.mu.Lock()
 		delete(c.callerMap, seq)
-		caller.Done <- 1
 		c.mu.Unlock()
-		return err
+		caller.Error = err
+		caller.Done <- caller
+		return
 	}
-	return nil
+	req.Payload = data
+	data = *req.Encode()
+	_, err = c.conn.Write(*req.Encode())
+	if err != nil {
+		c.mu.Lock()
+		delete(c.callerMap, seq)
+		c.mu.Unlock()
+		caller.Error = err
+		caller.Done <- caller
+		return
+	}
 }
 func (c *client) read() {
 	r := bufio.NewReader(c.conn)
 	var err error
 	for {
-		c.conn.SetReadDeadline(time.Now().Add(c.Option.ReadTimeout))
+		_ = c.conn.SetReadDeadline(time.Now().Add(c.Option.ReadTimeout))
 		var resp = protocol.GetMsg()
 		resp.SetMessageType(protocol.Response)
 		if err = resp.Decode(r); err != nil {
@@ -157,19 +226,19 @@ func (c *client) read() {
 		caller.ResponseMetadata = resp.Metadata
 		if resp.Status() == protocol.Error {
 			caller.Error = fmt.Errorf("%v", resp.Metadata[util.ResponseError])
-			caller.Done <- 1
+			caller.Done <- caller
 		} else {
 			cdc := codec.CodecMap[resp.Serialize()]
 			err = cdc.Decode(resp.Payload, caller.Reply)
 			if err != nil {
 				caller.Error = err
 			}
-			caller.Done <- 1
+			caller.Done <- caller
 		}
 
 	}
 	for _, call := range c.callerMap {
 		call.Error = err
-		call.Done <- 1
+		call.Done <- call
 	}
 }

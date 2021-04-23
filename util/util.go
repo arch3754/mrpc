@@ -2,51 +2,21 @@ package util
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"io/ioutil"
 	"runtime"
 )
 
 const (
-	RequestMetaData  = "request_metadata"
-	ResponseMetaData = "response_metadata"
+	RequestMetaData    = "__request_metadata"
+	ResponseMetaData   = "__response_metadata"
+	RequestTime        = "__request_time"
+	ResponseError      = "__response_error"
+	DefaultRpcBasePath = "__rpc_path"
+	ConnPtr            = "__conn"
+	ServerTimeout      = "__server_timeout"
+	CpuIdle            = "__cpu_idle"
 )
-const (
-	RequestTime   = "request_time"
-	ResponseError = "response_error"
-)
-
-func GetRequestMetaData(ctx context.Context) map[string]string {
-	value := ctx.Value(RequestMetaData)
-	if value != nil {
-		return value.(map[string]string)
-	}
-	return nil
-}
-func SetRequestMetaData(ctx context.Context, meta map[string]string) context.Context {
-	return context.WithValue(ctx, RequestMetaData, meta)
-}
-func GetResponseMetaData(ctx context.Context) map[string]string {
-	value := ctx.Value(ResponseMetaData)
-	if value != nil {
-		return value.(map[string]string)
-	}
-	return nil
-}
-func SetResponseMetaData(ctx context.Context, meta map[string]string) context.Context {
-	return context.WithValue(ctx, ResponseMetaData, meta)
-}
-func GetRequestTime(ctx context.Context) int64 {
-	value := ctx.Value(RequestTime)
-	if value != nil {
-		return value.(int64)
-	}
-	return 0
-}
-func SetRequestTime(ctx context.Context, t int64) context.Context {
-	return context.WithValue(ctx, RequestTime, t)
-}
 
 var (
 	dunno     = []byte("???")

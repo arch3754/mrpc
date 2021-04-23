@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"github.com/arch3754/mrpc/log"
 	"io"
 )
 
@@ -101,7 +102,6 @@ type Message struct {
 	Method   string
 	Metadata map[string]string
 	Payload  []byte
-	//data          []byte
 }
 
 func NewMessage() *Message {
@@ -240,6 +240,9 @@ func (m *Message) Decode(r io.Reader) error {
 	n = n + 4
 	if metaSize > 0 {
 		m.Metadata, err = decodeMetadata(metaSize, data[n:n+metaSize])
+		if err != nil {
+			log.Rlog.Debug("decodeMetadata failed:%v", err)
+		}
 		n = n + metaSize
 	}
 

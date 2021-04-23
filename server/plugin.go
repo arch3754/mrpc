@@ -1,4 +1,6 @@
 package server
 
-type plugin interface {
+type Plugin interface {
+	ServiceRegister() error
+	Close() error
 }

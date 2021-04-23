@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/arch3754/mrpc/codec"
 	"github.com/arch3754/mrpc/protocol"
+	"github.com/arch3754/mrpc/util"
 	"testing"
 )
 
@@ -13,9 +14,12 @@ type A struct {
 	Num int
 }
 
-func (s *A) Add(ctx context.Context, arg *int, reply *int) error {
+func (s *A) Add(ctx context.Context, arg *int64, reply *int64) error {
+	resMeta := util.GetResponseMetadata(ctx)
+	fmt.Printf("resp meta: %+v\n", util.GetRequestMetadata(ctx))
+	resMeta["test_resp"] = "22222"
 	*reply = *arg + 1
-	return fmt.Errorf("test error")
+	return nil
 }
 func TestNewServer(t *testing.T) {
 	s := NewServer()

@@ -71,7 +71,7 @@ func (h *handler) installMethod(typ reflect.Type) map[string]*method {
 			continue
 		}
 		reply := m.Type.In(3)
-		if arg.Kind() != reflect.Ptr {
+		if reply.Kind() != reflect.Ptr {
 			log.Rlog.Debug("handler(%v) method(%v) reply not ptr(%v)", h.name, m.Name, reply.Kind().String())
 			continue
 		}
