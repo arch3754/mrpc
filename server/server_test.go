@@ -7,6 +7,7 @@ import (
 	"github.com/arch3754/mrpc/codec"
 	"github.com/arch3754/mrpc/protocol"
 	"github.com/arch3754/mrpc/util"
+	"go.etcd.io/etcd/clientv3"
 	"testing"
 )
 
@@ -22,7 +23,15 @@ func (s *A) Add(ctx context.Context, arg *int64, reply *int64) error {
 	return nil
 }
 func TestNewServer(t *testing.T) {
+	plug, err := NewEtcdPlugin(&EtcdConfig{
+		RpcServerAddr: "tcp@127.0.0.1:8888",
+		EtcdConf:      &clientv3.Config{Endpoints: []string{"127.0.0.1:2379"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	s := NewServer()
+	s.AddPlugin(plug)
 	s.Register(new(A))
 	t.Logf("start rpc server,listen on 127.0.0.1:8888")
 	t.Fatal("111", s.Serve("tcp", "127.0.0.1:8888"))

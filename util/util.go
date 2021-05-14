@@ -12,7 +12,7 @@ const (
 	ResponseMetaData   = "__response_metadata"
 	RequestTime        = "__request_time"
 	ResponseError      = "__response_error"
-	DefaultRpcBasePath = "__rpc_path"
+	DefaultRpcBasePath = "__rpc_base_path"
 	ConnPtr            = "__conn"
 	ServerTimeout      = "__server_timeout"
 	CpuIdle            = "__cpu_idle"

@@ -39,6 +39,7 @@ type Option struct {
 	Serialize          protocol.Serialize
 	ReadTimeout        time.Duration
 	ConnectTimeout     time.Duration
+	LoadBalance        int
 	HbsEnable          bool
 	HbsInterval        time.Duration
 	HbsTimeout         time.Duration
@@ -71,6 +72,9 @@ func (c *client) Connect(network string, addr string) error {
 	}
 	return nil
 }
+func (c *client) Close() {
+	//todo
+}
 func (c *client) newTCPConn(network, address string) (net.Conn, error) {
 	return net.DialTimeout(network, address, c.Option.ConnectTimeout)
 }
@@ -88,6 +92,9 @@ func (c *client) AsyncCall(ctx context.Context, path, method string, arg, reply 
 		caller.RequestMetadata = meta.(map[string]string)
 	}
 	if deadline, ok := ctx.Deadline(); ok {
+		if len(caller.RequestMetadata) == 0 {
+			caller.RequestMetadata = make(map[string]string)
+		}
 		caller.RequestMetadata[util.ServerTimeout] = fmt.Sprintf("%v", time.Until(deadline).Milliseconds())
 	}
 	if _, ok := ctx.(*util.Context); !ok {
