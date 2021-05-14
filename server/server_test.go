@@ -22,6 +22,20 @@ func (s *A) Add(ctx context.Context, arg *int64, reply *int64) error {
 	*reply = *arg + 1
 	return nil
 }
+func TestNewServer1(t *testing.T) {
+	plug, err := NewEtcdPlugin(&EtcdConfig{
+		RpcServerAddr: "tcp@127.0.0.1:8889",
+		EtcdConf:      &clientv3.Config{Endpoints: []string{"127.0.0.1:2379"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewServer()
+	s.AddPlugin(plug)
+	s.Register(new(A))
+	t.Logf("start rpc server,listen on 127.0.0.1:8889")
+	t.Fatal("111", s.Serve("tcp", "127.0.0.1:8889"))
+}
 func TestNewServer(t *testing.T) {
 	plug, err := NewEtcdPlugin(&EtcdConfig{
 		RpcServerAddr: "tcp@127.0.0.1:8888",
