@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/arch3754/mrpc/codec"
+	"github.com/arch3754/mrpc/lb"
 	"github.com/arch3754/mrpc/log"
 	"github.com/arch3754/mrpc/protocol"
 	"github.com/arch3754/mrpc/util"
@@ -20,7 +21,7 @@ type client struct {
 	seq           uint64
 	mu            sync.Mutex
 	callerMap     map[uint64]*Caller
-	closing       bool
+	isClose       bool
 	serverCpuIdle float64
 }
 type Caller struct {
@@ -35,7 +36,7 @@ type Caller struct {
 	seq              uint64
 }
 type Option struct {
-	Retry              int
+	//Retry              int
 	Serialize          protocol.Serialize
 	ReadTimeout        time.Duration
 	ConnectTimeout     time.Duration
@@ -45,9 +46,26 @@ type Option struct {
 	HbsTimeout         time.Duration
 	Compress           protocol.Compress
 	TCPKeepAlivePeriod time.Duration
+	Breaker            Breaker
+}
+
+var DefaultOption = &Option{
+	Serialize:          protocol.MsgPack,
+	ReadTimeout:        time.Second * 10,
+	ConnectTimeout:     time.Second * 3,
+	LoadBalance:        lb.RoundRobin,
+	HbsEnable:          true,
+	HbsInterval:        5 * time.Second,
+	HbsTimeout:         15 * time.Second,
+	Compress:           protocol.Gzip,
+	TCPKeepAlivePeriod: time.Second * 60,
+	Breaker:            DefaultBreaker,
 }
 
 func NewClient(option *Option) *client {
+	if option == nil {
+		option = DefaultOption
+	}
 	return &client{
 		Option:    option,
 		mu:        sync.Mutex{},
@@ -57,7 +75,7 @@ func NewClient(option *Option) *client {
 func (c *client) Connect(network string, addr string) error {
 	conn, err := c.newTCPConn(network, addr)
 	if err != nil {
-		log.Rlog.Error("client connect %v@%v failed:%v", network, addr, err)
+		log.Rlog.Error("%v", err)
 		return err
 	}
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
@@ -72,8 +90,15 @@ func (c *client) Connect(network string, addr string) error {
 	}
 	return nil
 }
-func (c *client) Close() {
-	//todo
+func (c *client) GetCpuIdle() float64 {
+	return c.serverCpuIdle
+}
+func (c *client) GetRemoteAddr() string {
+	return c.conn.RemoteAddr().String()
+}
+func (c *client) Close() error {
+	c.isClose = true
+	return c.conn.Close()
 }
 func (c *client) newTCPConn(network, address string) (net.Conn, error) {
 	return net.DialTimeout(network, address, c.Option.ConnectTimeout)
@@ -146,7 +171,7 @@ func (c *client) heartbeatTicker() {
 	}
 	ticker := time.NewTicker(c.Option.HbsInterval)
 	for range ticker.C {
-		if c.closing {
+		if c.isClose {
 			ticker.Stop()
 			break
 		}
@@ -182,7 +207,6 @@ func (c *client) heartbeat(ctx context.Context, reply interface{}) error {
 	return nil
 }
 func (c *client) call(ctx context.Context, caller *Caller) {
-
 	_ = c.conn.SetDeadline(time.Now().Add(c.Option.ReadTimeout))
 	c.mu.Lock()
 	cdc := codec.CodecMap[c.Option.Serialize]
@@ -230,6 +254,7 @@ func (c *client) read() {
 		var resp = protocol.GetMsg()
 		resp.SetMessageType(protocol.Response)
 		if err = resp.Decode(r); err != nil {
+			log.Rlog.Debug("%v", err)
 			break
 		}
 		c.mu.Lock()
@@ -248,10 +273,15 @@ func (c *client) read() {
 			}
 			caller.Done <- caller
 		}
-
+		//if c.isClose {
+		//	break
+		//}
 	}
+	c.isClose = true
+	_ = c.conn.Close()
 	for _, call := range c.callerMap {
-		call.Error = err
+		call.Error = fmt.Errorf("connection is closing")
 		call.Done <- call
 	}
+
 }

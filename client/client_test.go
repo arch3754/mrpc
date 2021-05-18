@@ -9,18 +9,7 @@ import (
 )
 
 func TestClient(t *testing.T) {
-	c := NewClient(&Option{
-		Retry: 3,
-		//RpcPath:            "A",
-		Serialize:          protocol.Json,
-		ReadTimeout:        time.Second * 3,
-		ConnectTimeout:     time.Second * 3,
-		HbsEnable:          true,
-		HbsInterval:        1 * time.Second,
-		HbsTimeout:         10 * time.Second,
-		Compress:           protocol.Gzip,
-		TCPKeepAlivePeriod: time.Second * 300,
-	})
+	c := NewClient(nil)
 	err := c.Connect("tcp", "127.0.0.1:8888")
 	if err != nil {
 		t.Error(err)
@@ -49,7 +38,6 @@ func TestClient(t *testing.T) {
 
 func TestHeartbeatClient(t *testing.T) {
 	c := NewClient(&Option{
-		Retry: 3,
 		//RpcPath:            "",
 		Serialize:          protocol.Json,
 		ReadTimeout:        time.Second * 3,

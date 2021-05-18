@@ -19,16 +19,23 @@ import (
 )
 
 type Server struct {
-	listener      net.Listener
-	Plugins       []Plugin
-	TlsConfig     *tls.Config
-	handlerMap    map[string]*handler
-	mu            sync.Mutex
-	activeConnMap map[string]net.Conn
+	listener          net.Listener
+	Plugins           []Plugin
+	TlsConfig         *tls.Config
+	connReadIdleTime  time.Duration
+	connWriteIdleTime time.Duration
+	handlerMap        map[string]*handler
+	mu                sync.Mutex
+	activeConnMap     map[string]net.Conn
 }
 
-func NewServer() *Server {
-	return &Server{handlerMap: make(map[string]*handler), activeConnMap: make(map[string]net.Conn)}
+func NewServer(readIdleTimeout,writeIdleTimeout time.Duration) *Server {
+	return &Server{
+		handlerMap: make(map[string]*handler),
+		activeConnMap: make(map[string]net.Conn),
+		connReadIdleTime: readIdleTimeout,
+		connWriteIdleTime: writeIdleTimeout,
+	}
 }
 func (s *Server) AddPlugin(plugin Plugin) {
 	s.Plugins = append(s.Plugins, plugin)
@@ -96,57 +103,60 @@ func (s *Server) serveConn(conn net.Conn) {
 			return
 		}
 
-		_ = conn.SetReadDeadline(now.Add(30 * time.Second))
+		_ = conn.SetReadDeadline(now.Add(s.connReadIdleTime))
 		ctx = util.WithLocalValue(ctx, util.RequestTime, time.Now().Unix())
-		go func() {
-			if req.IsHbs() {
-				resp := req
-				resp.SetMessageType(protocol.Response)
-				if req.Metadata == nil {
-					req.Metadata = make(map[string]string)
-				}
-				resp.Metadata[util.CpuIdle] = fmt.Sprintf("%v", cpu.CpuIdle())
-				_ = conn.SetWriteDeadline(now.Add(30 * time.Second))
-				data := resp.Encode()
-				_, err = conn.Write(*data)
-				if err != nil {
-					log.Rlog.Debug("hbs conn %v err:%v", conn.RemoteAddr(), err)
-				}
-				protocol.FreeMsg(req)
-				return
-			}
-			respMetaData := make(map[string]string)
-			ctx = util.WithLocalValue(util.WithLocalValue(ctx, util.RequestMetaData, req.Metadata),
-				util.ResponseMetaData, respMetaData)
-
-			cancelFunc := parseServerTimeout(ctx, req)
-			if cancelFunc != nil {
-				defer cancelFunc()
-			}
-
-			resp := s.handleRequest(ctx, req)
-			if len(respMetaData) > 0 {
-				if resp.Metadata == nil {
-					resp.Metadata = make(map[string]string)
-				}
-				for k, v := range respMetaData {
-					resp.Metadata[k] = v
-				}
-			} else {
-				resp.Metadata = respMetaData
-			}
-			_ = conn.SetWriteDeadline(now.Add(30 * time.Second))
-			data := resp.Encode()
-			_, err = conn.Write(*data)
-			if err != nil {
-				log.Rlog.Error("conn %v err:%v", conn.RemoteAddr(), err)
-			}
-
-			protocol.FreeMsg(req)
-			protocol.FreeMsg(resp)
-		}()
+		//todo 池化
+		go s.serverRequest(ctx, req, conn, now)
 
 	}
+}
+
+func (s *Server) serverRequest(ctx *util.Context, req *protocol.Message, conn net.Conn, now time.Time) {
+	if req.IsHbs() {
+		resp := req
+		resp.SetMessageType(protocol.Response)
+		if req.Metadata == nil {
+			req.Metadata = make(map[string]string)
+		}
+		resp.Metadata[util.CpuIdle] = fmt.Sprintf("%v", cpu.CpuIdle())
+		_ = conn.SetWriteDeadline(now.Add(s.connWriteIdleTime))
+		data := resp.Encode()
+		_, err := conn.Write(*data)
+		if err != nil {
+			log.Rlog.Debug("hbs conn %v err:%v", conn.RemoteAddr(), err)
+		}
+		protocol.FreeMsg(req)
+		return
+	}
+	respMetaData := make(map[string]string)
+	ctx = util.WithLocalValue(util.WithLocalValue(ctx, util.RequestMetaData, req.Metadata),
+		util.ResponseMetaData, respMetaData)
+
+	cancelFunc := parseServerTimeout(ctx, req)
+	if cancelFunc != nil {
+		defer cancelFunc()
+	}
+
+	resp := s.handleRequest(ctx, req)
+	if len(respMetaData) > 0 {
+		if resp.Metadata == nil {
+			resp.Metadata = make(map[string]string)
+		}
+		for k, v := range respMetaData {
+			resp.Metadata[k] = v
+		}
+	} else {
+		resp.Metadata = respMetaData
+	}
+	_ = conn.SetWriteDeadline(now.Add(s.connWriteIdleTime))
+	data := resp.Encode()
+	_, err := conn.Write(*data)
+	if err != nil {
+		log.Rlog.Error("conn %v err:%v", conn.RemoteAddr(), err)
+	}
+
+	protocol.FreeMsg(req)
+	protocol.FreeMsg(resp)
 }
 func parseServerTimeout(ctx *util.Context, req *protocol.Message) context.CancelFunc {
 	if req == nil || req.Metadata == nil {

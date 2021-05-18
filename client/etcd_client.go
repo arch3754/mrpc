@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"github.com/arch3754/mrpc/lb"
 	"github.com/arch3754/mrpc/log"
 	"github.com/coreos/etcd/mvcc/mvccpb"
@@ -22,37 +23,82 @@ type EtcdClient struct {
 }
 
 func NewEtcdClient(etcdAddr []string, prefix string, option *Option) (*EtcdClient, error) {
+	if option == nil {
+		option = DefaultOption
+	}
 	etcdClient, err := clientv3.New(clientv3.Config{Endpoints: etcdAddr, DialTimeout: 5 * time.Second})
 	if err != nil {
 		return nil, err
 	}
-	c := &EtcdClient{etcdClient: etcdClient, prefix: prefix, option: option,serverConnPool:make(map[string]*client)}
+	lbr, ok := lb.LoadBalancerMap[option.LoadBalance]
+	if !ok {
+		lbr = &lb.RoundRobinLoadBalancer{}
+	}
+	c := &EtcdClient{
+		etcdClient:     etcdClient,
+		prefix:         prefix,
+		option:         option,
+		lb:             lbr,
+		serverConnPool: make(map[string]*client),
+	}
 	if err = c.init(); err != nil {
 		return nil, err
 	}
-	c.lb = c.selectLBMode(option.LoadBalance)
 	return c, nil
 }
-func (c *EtcdClient) selectLBMode(lbr int) lb.LoadBalancer {
-	switch lbr {
-	case lb.RoundRobin:
-		return &lb.RoundRobinLoadBalancer{Addrs: c.serverKeyList[:]}
-	case lb.Random:
-		return &lb.RandomLoadBalancer{Addrs: c.serverKeyList[:]}
-	default:
-		return &lb.RoundRobinLoadBalancer{Addrs: c.serverKeyList[:]}
+
+func (c *EtcdClient) getClient() (*client, error) {
+	if len(c.serverConnPool) == 0 {
+		return nil, fmt.Errorf("not available service")
 	}
+	if !c.option.Breaker.Ready() {
+		log.Rlog.Error("breaker ready")
+		return nil, fmt.Errorf("breaker ready")
+	}
+	key := c.lb.Get()
+	c.lock.RLock()
+	defer c.lock.RUnlock()
+	cli := c.serverConnPool[key]
+	if cli.isClose {
+		network, addr, err := c.buildAddress(key)
+		err = cli.Connect(network, addr)
+		if err != nil {
+			c.option.Breaker.Fail()
+			return nil, err
+		}
+		c.option.Breaker.Success()
+		c.serverConnPool[key] = cli
+	}
+
+	return cli, nil
+}
+func (c *EtcdClient) buildAddress(key string) (string, string, error) {
+	arr := strings.Split(key, "@")
+	if len(arr) != 2 {
+		return "", "", fmt.Errorf("address parse failed")
+	}
+	return arr[0], arr[1], nil
 }
 func (c *EtcdClient) Call(ctx context.Context, path, method string, arg, reply interface{}) error {
-	c.lock.RLock()
-	cli := c.serverConnPool[c.lb.Get()]
-	c.lock.RUnlock()
+	cli, err := c.getClient()
+	if err != nil {
+		return err
+	}
 	return cli.SyncCall(ctx, path, method, arg, reply)
 }
 func (c *EtcdClient) AsyncCall(ctx context.Context, path, method string, arg, reply interface{}) *Caller {
-	c.lock.RLock()
-	cli := c.serverConnPool[c.lb.Get()]
-	c.lock.RUnlock()
+	cli, err := c.getClient()
+	if err != nil {
+		var caller = &Caller{
+			Path:   path,
+			Method: method,
+			Error:  err,
+			Done:   make(chan *Caller, 1),
+		}
+		caller.Done <- caller
+		return caller
+	}
+
 	return cli.AsyncCall(ctx, path, method, arg, reply)
 }
 func (c *EtcdClient) init() error {
@@ -72,36 +118,36 @@ func (c *EtcdClient) init() error {
 
 func (c *EtcdClient) setServiceList(key, val string) {
 	cli := NewClient(c.option)
-	arr := strings.Split(val, "@")
-	if len(arr) != 2 {
-		log.Rlog.Warn("ignore server %v connect.", key)
-		return
-	}
-	err := cli.Connect(arr[0], arr[1])
+	network, addr, err := c.buildAddress(val)
+
+	err = cli.Connect(network, addr)
 	if err != nil {
-		log.Rlog.Warn("server %v connect failed:%v", key, err)
+		log.Rlog.Warn("server %v connect failed:%v", val, err)
 		return
 	}
 	c.lock.Lock()
-	defer c.lock.Unlock()
-	c.serverKeyList = append(c.serverKeyList, key)
-	c.serverConnPool[key] = cli
+	c.serverKeyList = append(c.serverKeyList, val)
+	c.serverConnPool[val] = cli
+	c.lb.UpdateAddrs(c.serverKeyList)
+	c.lock.Unlock()
 
 }
 
 func (c *EtcdClient) delServiceList(key string) {
 	c.lock.Lock()
-	defer c.lock.Unlock()
 	if v, ok := c.serverConnPool[key]; ok {
-		v.Close()
+		_ = v.Close()
 	}
 	delete(c.serverConnPool, key)
 	for k, v := range c.serverKeyList {
 		if v == key {
 			c.serverKeyList = append(c.serverKeyList[:k], c.serverKeyList[:k+1]...)
-			return
+			break
 		}
 	}
+	c.lb.UpdateAddrs(c.serverKeyList)
+	c.lock.Unlock()
+
 }
 func (c *EtcdClient) watch() {
 	go func() {

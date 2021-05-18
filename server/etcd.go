@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/base64"
 	"github.com/arch3754/mrpc/log"
 	"github.com/arch3754/mrpc/util"
 	"go.etcd.io/etcd/clientv3"
@@ -46,8 +45,7 @@ func (p *EtcdPlugin) ServiceRegister() error {
 		return err
 	}
 	//注册服务并绑定租约
-	key:=base64.StdEncoding.EncodeToString([]byte(p.config.RpcServerAddr))
-	_, err = p.client.Put(context.Background(), p.config.BasePath+"/"+key, p.config.RpcServerAddr, clientv3.WithLease(resp.ID))
+	_, err = p.client.Put(context.Background(), p.config.BasePath+"/"+p.config.RpcServerAddr, p.config.RpcServerAddr, clientv3.WithLease(resp.ID))
 	if err != nil {
 		return err
 	}

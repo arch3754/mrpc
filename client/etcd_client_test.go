@@ -2,31 +2,20 @@ package client
 
 import (
 	"context"
-	"github.com/arch3754/mrpc/protocol"
 	"github.com/arch3754/mrpc/util"
 	"testing"
 	"time"
 )
 
 func TestEtcdClient(t *testing.T) {
-	c, err := NewEtcdClient([]string{"127.0.0.1:2379"}, "", &Option{
-		Retry: 3,
-		//RpcPath:            "A",
-		Serialize:          protocol.Json,
-		ReadTimeout:        time.Second * 3,
-		ConnectTimeout:     time.Second * 3,
-		HbsEnable:          true,
-		HbsInterval:        1 * time.Second,
-		HbsTimeout:         10 * time.Second,
-		Compress:           protocol.Gzip,
-		TCPKeepAlivePeriod: time.Second * 300,
-	})
+	c, err := NewEtcdClient([]string{"127.0.0.1:2379"}, "", nil)
 	if err != nil {
 		t.Error(err)
 		return
 	}
 
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 10000; i++ {
+		time.Sleep(time.Millisecond * 100)
 		var reply int64
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		ctx = util.SetRequestMetadata(ctx, map[string]string{"testreq": "111"})
@@ -36,9 +25,8 @@ func TestEtcdClient(t *testing.T) {
 
 		}
 		if caller.Error != nil {
-			t.Error(err)
+			t.Error(caller.Error)
 			cancel()
-			return
 		}
 		cancel()
 		t.Log("reply:", reply, "meta:", caller.ResponseMetadata)
