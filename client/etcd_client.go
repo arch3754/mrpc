@@ -52,7 +52,6 @@ func (c *EtcdClient) getClient() (*client, error) {
 		return nil, fmt.Errorf("not available service")
 	}
 	if !c.option.Breaker.Ready() {
-		log.Rlog.Error("breaker ready")
 		return nil, fmt.Errorf("breaker ready")
 	}
 	key := c.lb.Get()

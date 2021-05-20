@@ -38,9 +38,8 @@ func TestClient(t *testing.T) {
 
 func TestHeartbeatClient(t *testing.T) {
 	c := NewClient(&Option{
-		//RpcPath:            "",
 		Serialize:          protocol.Json,
-		ReadTimeout:        time.Second * 3,
+		ConnTimeout:        time.Second * 10,
 		ConnectTimeout:     time.Second * 3,
 		HbsEnable:          true,
 		HbsInterval:        1 * time.Second,

@@ -38,7 +38,7 @@ type Caller struct {
 type Option struct {
 	//Retry              int
 	Serialize          protocol.Serialize
-	ReadTimeout        time.Duration
+	ConnTimeout        time.Duration
 	ConnectTimeout     time.Duration
 	LoadBalance        int
 	HbsEnable          bool
@@ -51,7 +51,7 @@ type Option struct {
 
 var DefaultOption = &Option{
 	Serialize:          protocol.MsgPack,
-	ReadTimeout:        time.Second * 10,
+	ConnTimeout:        time.Second * 10,
 	ConnectTimeout:     time.Second * 3,
 	LoadBalance:        lb.RoundRobin,
 	HbsEnable:          true,
@@ -82,7 +82,7 @@ func (c *client) Connect(network string, addr string) error {
 		_ = tcpConn.SetKeepAlivePeriod(c.Option.TCPKeepAlivePeriod)
 		_ = tcpConn.SetKeepAlive(true)
 	}
-	_ = conn.SetDeadline(time.Now().Add(c.Option.ReadTimeout))
+	_ = conn.SetDeadline(time.Now().Add(c.Option.ConnTimeout))
 	c.conn = conn
 	go c.read()
 	if c.Option.HbsEnable {
@@ -115,6 +115,8 @@ func (c *client) AsyncCall(ctx context.Context, path, method string, arg, reply 
 	meta := ctx.Value(util.RequestMetaData)
 	if meta != nil {
 		caller.RequestMetadata = meta.(map[string]string)
+	} else {
+		caller.RequestMetadata = make(map[string]string)
 	}
 	if deadline, ok := ctx.Deadline(); ok {
 		if len(caller.RequestMetadata) == 0 {
@@ -140,6 +142,8 @@ func (c *client) SyncCall(ctx context.Context, path, method string, arg, reply i
 	meta := ctx.Value(util.RequestMetaData)
 	if meta != nil {
 		caller.RequestMetadata = meta.(map[string]string)
+	} else {
+		caller.RequestMetadata = make(map[string]string)
 	}
 	if deadline, ok := ctx.Deadline(); ok {
 		caller.RequestMetadata[util.ServerTimeout] = fmt.Sprintf("%v", time.Until(deadline).Milliseconds())
@@ -177,16 +181,29 @@ func (c *client) heartbeatTicker() {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), c.Option.HbsTimeout)
 		var reply int64
-		err := c.heartbeat(ctx, &reply)
-		if err != nil {
-			log.Rlog.Warn("heartbeat %v err:%v", c.conn.RemoteAddr().String(), err)
-		}
+		c.heartbeat(ctx, &reply)
 		cancel()
 	}
 }
-func (c *client) heartbeat(ctx context.Context, reply interface{}) error {
-
-	caller := c.AsyncCall(ctx, "", "", time.Now().UnixNano(), reply)
+func (c *client) heartbeat(ctx context.Context, reply interface{}) {
+	caller := &Caller{
+		Arg:   time.Now().UnixNano(),
+		Reply: reply,
+		Done:  make(chan *Caller, 1),
+	}
+	meta := ctx.Value(util.RequestMetaData)
+	if meta != nil {
+		caller.RequestMetadata = meta.(map[string]string)
+	} else {
+		caller.RequestMetadata = make(map[string]string)
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		caller.RequestMetadata[util.ServerTimeout] = fmt.Sprintf("%v", time.Until(deadline).Milliseconds())
+	}
+	if _, ok := ctx.(*util.Context); !ok {
+		ctx = util.NewContext(ctx)
+	}
+	c.call(ctx, caller)
 	select {
 	case <-ctx.Done():
 		c.mu.Lock()
@@ -194,20 +211,20 @@ func (c *client) heartbeat(ctx context.Context, reply interface{}) error {
 		c.mu.Unlock()
 		caller.Error = ctx.Err()
 		caller.Done <- caller
-		return ctx.Err()
+		c.Close()
 	case call := <-caller.Done:
 		if call.Error != nil {
-			return call.Error
+			log.Rlog.Warn("heartbeat %v err:%v", c.conn.RemoteAddr().String(), call.Error)
+			c.Close()
 		}
 		if v, ok := call.ResponseMetadata["cpu.idle"]; ok {
 			c.serverCpuIdle, _ = strconv.ParseFloat(v, 64)
 			log.Rlog.Debug("heartbeat remoteAddr=%v cpu.idle=%v", c.conn.RemoteAddr().String(), c.serverCpuIdle)
 		}
 	}
-	return nil
 }
 func (c *client) call(ctx context.Context, caller *Caller) {
-	_ = c.conn.SetDeadline(time.Now().Add(c.Option.ReadTimeout))
+	_ = c.conn.SetDeadline(time.Now().Add(c.Option.ConnTimeout))
 	c.mu.Lock()
 	cdc := codec.CodecMap[c.Option.Serialize]
 	seq := c.seq
@@ -235,7 +252,6 @@ func (c *client) call(ctx context.Context, caller *Caller) {
 		return
 	}
 	req.Payload = data
-	data = *req.Encode()
 	_, err = c.conn.Write(*req.Encode())
 	if err != nil {
 		c.mu.Lock()
@@ -249,12 +265,12 @@ func (c *client) call(ctx context.Context, caller *Caller) {
 func (c *client) read() {
 	r := bufio.NewReader(c.conn)
 	var err error
+
 	for {
-		_ = c.conn.SetReadDeadline(time.Now().Add(c.Option.ReadTimeout))
+		_ = c.conn.SetDeadline(time.Now().Add(c.Option.ConnTimeout))
 		var resp = protocol.GetMsg()
 		resp.SetMessageType(protocol.Response)
 		if err = resp.Decode(r); err != nil {
-			log.Rlog.Debug("%v", err)
 			break
 		}
 		c.mu.Lock()
@@ -273,12 +289,11 @@ func (c *client) read() {
 			}
 			caller.Done <- caller
 		}
-		//if c.isClose {
-		//	break
-		//}
+		if c.isClose {
+			break
+		}
 	}
-	c.isClose = true
-	_ = c.conn.Close()
+	c.Close()
 	for _, call := range c.callerMap {
 		call.Error = fmt.Errorf("connection is closing")
 		call.Done <- call

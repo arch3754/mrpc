@@ -29,11 +29,11 @@ type Server struct {
 	activeConnMap     map[string]net.Conn
 }
 
-func NewServer(readIdleTimeout,writeIdleTimeout time.Duration) *Server {
+func NewServer(readIdleTimeout, writeIdleTimeout time.Duration) *Server {
 	return &Server{
-		handlerMap: make(map[string]*handler),
-		activeConnMap: make(map[string]net.Conn),
-		connReadIdleTime: readIdleTimeout,
+		handlerMap:        make(map[string]*handler),
+		activeConnMap:     make(map[string]net.Conn),
+		connReadIdleTime:  readIdleTimeout,
 		connWriteIdleTime: writeIdleTimeout,
 	}
 }
@@ -79,7 +79,7 @@ func (s *Server) serveListener(ln net.Listener) {
 				}
 			}
 		}
-		s.serveConn(conn)
+		go s.serveConn(conn)
 
 		s.mu.Lock()
 		delete(s.activeConnMap, conn.RemoteAddr().String())
@@ -90,7 +90,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	r := bufio.NewReaderSize(conn, 1024)
 	for {
 		now := time.Now()
-
+		_ = conn.SetReadDeadline(now.Add(s.connReadIdleTime))
 		ctx := util.WithValue(context.Background(), util.ConnPtr, conn)
 		req, err := s.readRequest(ctx, r)
 		if err != nil {
@@ -102,11 +102,10 @@ func (s *Server) serveConn(conn net.Conn) {
 			protocol.FreeMsg(req)
 			return
 		}
-
-		_ = conn.SetReadDeadline(now.Add(s.connReadIdleTime))
+		_ = conn.SetWriteDeadline(now.Add(s.connWriteIdleTime))
 		ctx = util.WithLocalValue(ctx, util.RequestTime, time.Now().Unix())
 		//todo 池化
-		go s.serverRequest(ctx, req, conn, now)
+		s.serverRequest(ctx, req, conn, now)
 
 	}
 }
@@ -119,7 +118,7 @@ func (s *Server) serverRequest(ctx *util.Context, req *protocol.Message, conn ne
 			req.Metadata = make(map[string]string)
 		}
 		resp.Metadata[util.CpuIdle] = fmt.Sprintf("%v", cpu.CpuIdle())
-		_ = conn.SetWriteDeadline(now.Add(s.connWriteIdleTime))
+
 		data := resp.Encode()
 		_, err := conn.Write(*data)
 		if err != nil {
@@ -141,6 +140,10 @@ func (s *Server) serverRequest(ctx *util.Context, req *protocol.Message, conn ne
 	if len(respMetaData) > 0 {
 		if resp.Metadata == nil {
 			resp.Metadata = make(map[string]string)
+		} else {
+			for k := range resp.Metadata {
+				delete(resp.Metadata, k)
+			}
 		}
 		for k, v := range respMetaData {
 			resp.Metadata[k] = v
@@ -148,13 +151,12 @@ func (s *Server) serverRequest(ctx *util.Context, req *protocol.Message, conn ne
 	} else {
 		resp.Metadata = respMetaData
 	}
-	_ = conn.SetWriteDeadline(now.Add(s.connWriteIdleTime))
+
 	data := resp.Encode()
 	_, err := conn.Write(*data)
 	if err != nil {
 		log.Rlog.Error("conn %v err:%v", conn.RemoteAddr(), err)
 	}
-
 	protocol.FreeMsg(req)
 	protocol.FreeMsg(resp)
 }
